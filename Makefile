@@ -1,4 +1,4 @@
-obj-m+=freq_test.o
+obj-m+=gpiotach.o
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) modules
