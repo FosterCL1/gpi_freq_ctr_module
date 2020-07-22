@@ -94,20 +94,16 @@ module_exit(gpiotach_exit);
  */
 static void clearTailBuffer(void *dev_id, ktime_t *pktime)
 {
-    unsigned long head, tail;
     ktime_t *item;
 
-    head = timeBuffer.head;
-    tail = timeBuffer.tail;
-
-    while (CIRC_CNT(head, tail, timeBuffer.bufferSize) >= 1) {
-        item = &(timeBuffer.buffer[tail]);
+    while (CIRC_CNT(timeBuffer.head, timeBuffer.tail, timeBuffer.bufferSize) >= 1) {
+        item = &(timeBuffer.buffer[timeBuffer.tail]);
         if (ktime_compare(*pktime, *item) > 0) {
             //smp_store_release(timeBuffer.tail, (tail + 1) & (timeBuffer.bufferSize - 1));
             timeBuffer.tail ++;
             timeBuffer.tail %= (timeBuffer.bufferSize - 1);
         } else {
-            break;
+            return;
         }
     }
 }
@@ -116,15 +112,17 @@ static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct
     ktime_t ktime;
     unsigned long head, tail, flags;
     ktime_t *item;
+
     numberPresses++;
     ktime = ktime_get();
 
-    //spin_lock(timeBuffer.producer_lock);
+    printk(KERN_INFO MODULE_NAME ": Interrupt. Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
+
     spin_lock_irqsave(&cache_lock, flags); 
 
     clearTailBuffer(dev_id, &ktime);
 
-    ktime_add_ns(ktime, NSEC_PER_SEC);
+    ktime = ktime_add_us(ktime, 10 * USEC_PER_SEC);
 
     head = timeBuffer.head;
     tail = timeBuffer.tail;
@@ -134,10 +132,11 @@ static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct
         *item = ktime;
         timeBuffer.head++;
         timeBuffer.head %= (timeBuffer.bufferSize - 1);
-        //smp_store_release(timeBuffer.head, (head + 1) & (buffer->size - 1));
     }
 
     spin_unlock_irqrestore(&cache_lock, flags);
+
+    printk(KERN_INFO MODULE_NAME ": After, Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
 
     return (irq_handler_t) IRQ_HANDLED;
 }
@@ -145,23 +144,27 @@ static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct
 static int gpiotach_open(struct inode *inode, struct file *file)
 {
     struct tachometer_data *my_data;
-    printk(KERN_INFO MODULE_NAME "Inside open\n");
-    my_data = (struct tachometer_data *) file->private_data;
+    printk(KERN_INFO MODULE_NAME ": Inside open\n");
+    //my_data = (struct tachometer_data *) file->private_data;
+    my_data = container_of(inode->i_cdev, struct tachometer_data, cdev);
 
-    if (down_interruptible(&my_data->sem)) {
-        printk(KERN_INFO MODULE_NAME ": Could not hold semaphore\n");
-        return -1;
-    }
+    // TODO: Need to make sure we've only got a single open
+    //file->private_data = my_data;
+
+    //if (down_interruptible(&my_data->sem)) {
+    //    printk(KERN_INFO MODULE_NAME ": Could not hold semaphore\n");
+    //    return -1;
+    //}
 
     return 0;
 }
 
 static int gpiotach_release(struct inode *inode, struct file *file) 
 {
-    struct tachometer_data *my_data;
+    //struct tachometer_data *my_data;
     printk(KERN_INFO MODULE_NAME ": Inside close\n");
-    my_data = (struct tachometer_data *) file->private_data;
-    up(&my_data->sem);
+    //my_data = (struct tachometer_data *) file->private_data;
+    //up(&my_data->sem);
     return 0;
 }
 
@@ -176,6 +179,7 @@ static int gpiotach_read(struct file *file, char __user *user_buffer, size_t siz
     my_data = (struct tachometer_data *) file->private_data;
 
     len = min(sizeof(numberPresses), size);
+    printk(KERN_INFO MODULE_NAME ": Inside read %d, %d\n", size, len);
 
     ktime = ktime_get();
 
@@ -186,10 +190,13 @@ static int gpiotach_read(struct file *file, char __user *user_buffer, size_t siz
     bufferCount = CIRC_CNT(head, tail, timeBuffer.bufferSize);
     spin_unlock_irqrestore(&cache_lock, flags);
 
+    printk(KERN_INFO MODULE_NAME ": Head:%d Tail:%d Cnt:%d\n", head, tail, bufferCount);
+
     if (copy_to_user(user_buffer, &bufferCount, len))
         return -EFAULT;
 
     *offset += len;
+
     return len;
 }
 
