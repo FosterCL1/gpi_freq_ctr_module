@@ -10,8 +10,10 @@
 
 #include <asm/uaccess.h>
 #include <linux/init.h>
+#include <linux/circ_buf.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/semaphore.h>
@@ -26,20 +28,38 @@ MODULE_VERSION("0.1");
 #define MODULE_NAME "GPIO_TACH"
 #define MODULE_MAX_MINORS 1
 
+#define MODULE_MAX_EVENT_COUNTS 200
+
 static unsigned int gpioInput = 15;
 static unsigned int irqNumber;
 static unsigned int numberPresses = 0;
 static int Major;
 static dev_t deviceNumber;
+static struct class *cl;
+
+static DEFINE_SPINLOCK(cache_lock);
 
 struct tachometer_data {
     struct cdev cdev;
     struct semaphore sem;
 };
 
-static struct class *cl;
-
 struct tachometer_data devs[MODULE_MAX_MINORS];
+
+typedef struct
+{
+    ktime_t buffer[MODULE_MAX_EVENT_COUNTS];
+    unsigned long head;
+    unsigned long tail;
+    int bufferSize;
+    //DEFINE_SPINLOCK(cache_lock);
+    //struct semaphore producer_lock;
+    //struct semaphore consumer_lock;
+}timeBuffer_t;
+
+static timeBuffer_t timeBuffer;
+
+#define TIME_SIZE sizeof(ktime_t)
 
 // We shouldn't really exceed a valid input of 100 Hz, so 10ms should be good
 #define FREQ_TEST_INPUT_DEBOUNCE_MS 10
@@ -69,8 +89,56 @@ static void __exit gpiotach_exit(void){
 }
 module_exit(gpiotach_exit);
 
+/**
+ * Assume the mutex is taken
+ */
+static void clearTailBuffer(void *dev_id, ktime_t *pktime)
+{
+    unsigned long head, tail;
+    ktime_t *item;
+
+    head = timeBuffer.head;
+    tail = timeBuffer.tail;
+
+    while (CIRC_CNT(head, tail, timeBuffer.bufferSize) >= 1) {
+        item = &(timeBuffer.buffer[tail]);
+        if (ktime_compare(*pktime, *item) > 0) {
+            //smp_store_release(timeBuffer.tail, (tail + 1) & (timeBuffer.bufferSize - 1));
+            timeBuffer.tail ++;
+            timeBuffer.tail %= (timeBuffer.bufferSize - 1);
+        } else {
+            break;
+        }
+    }
+}
+
 static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct pt_regs *regs){
+    ktime_t ktime;
+    unsigned long head, tail, flags;
+    ktime_t *item;
     numberPresses++;
+    ktime = ktime_get();
+
+    //spin_lock(timeBuffer.producer_lock);
+    spin_lock_irqsave(&cache_lock, flags); 
+
+    clearTailBuffer(dev_id, &ktime);
+
+    ktime_add_ns(ktime, NSEC_PER_SEC);
+
+    head = timeBuffer.head;
+    tail = timeBuffer.tail;
+
+    if (CIRC_SPACE(head, tail, timeBuffer.bufferSize) >= 1) {
+        item = &timeBuffer.buffer[head];
+        *item = ktime;
+        timeBuffer.head++;
+        timeBuffer.head %= (timeBuffer.bufferSize - 1);
+        //smp_store_release(timeBuffer.head, (head + 1) & (buffer->size - 1));
+    }
+
+    spin_unlock_irqrestore(&cache_lock, flags);
+
     return (irq_handler_t) IRQ_HANDLED;
 }
 
@@ -101,11 +169,24 @@ static int gpiotach_read(struct file *file, char __user *user_buffer, size_t siz
 {
     struct tachometer_data *my_data;
     ssize_t len;
+    unsigned long flags;
+    int bufferCount;
+    unsigned int head, tail;
+    ktime_t ktime;
     my_data = (struct tachometer_data *) file->private_data;
 
     len = min(sizeof(numberPresses), size);
 
-    if (copy_to_user(user_buffer, &numberPresses, len))
+    ktime = ktime_get();
+
+    spin_lock_irqsave(&cache_lock, flags); 
+    clearTailBuffer(file, &ktime);
+    head = timeBuffer.head;
+    tail = timeBuffer.tail;
+    bufferCount = CIRC_CNT(head, tail, timeBuffer.bufferSize);
+    spin_unlock_irqrestore(&cache_lock, flags);
+
+    if (copy_to_user(user_buffer, &bufferCount, len))
         return -EFAULT;
 
     *offset += len;
