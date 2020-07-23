@@ -29,7 +29,7 @@ MODULE_VERSION("0.1");
 #define MODULE_MAX_MINORS 1
 
 #define MODULE_SAMPLING_WINDOW_S 1
-#define MODULE_MAX_EVENT_COUNTS 200 * MODULE_SAMPLING_WINDOW_S
+#define MODULE_MAX_EVENT_COUNTS 256
 
 static unsigned int gpioInput = 15;
 static unsigned int irqNumber;
@@ -102,7 +102,7 @@ static void clearTailBuffer(void *dev_id, ktime_t *pktime)
         if (ktime_compare(*pktime, *item) > 0) {
             //smp_store_release(timeBuffer.tail, (tail + 1) & (timeBuffer.bufferSize - 1));
             timeBuffer.tail ++;
-            timeBuffer.tail %= (timeBuffer.bufferSize - 1);
+            timeBuffer.tail %= (timeBuffer.bufferSize);
         } else {
             return;
         }
@@ -131,12 +131,12 @@ static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct
         item = &timeBuffer.buffer[head];
         *item = ktime_future;
         timeBuffer.head++;
-        timeBuffer.head %= (timeBuffer.bufferSize - 1);
+        timeBuffer.head %= (timeBuffer.bufferSize);
     }
 
     spin_unlock_irqrestore(&cache_lock, flags);
 
-    //printk(KERN_INFO MODULE_NAME ": After, Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
+    //printk(KERN_INFO MODULE_NAME ": After, Head:%lu Tail:%lu\n", timeBuffer.head, timeBuffer.tail);
 
     return (irq_handler_t) IRQ_HANDLED;
 }
@@ -233,6 +233,10 @@ static int __init gpiotach_init(void){
 
     printk(KERN_INFO MODULE_NAME ": Initializing the LKM\n");
 
+    //
+    // Initialization routine for the GPI 
+    //
+    
     // Unsure whether this test will succeed
     if (!gpio_is_valid(gpioInput)){
         printk(KERN_INFO MODULE_NAME ": Invalid input GPIO\n");
@@ -260,6 +264,10 @@ static int __init gpiotach_init(void){
     printk(KERN_INFO MODULE_NAME ": The interrupt request result is: %d\n", 
             result);
 
+    //
+    // Initialization for the character device interface
+    //
+
     result = alloc_chrdev_region(&deviceNumber, 0, MODULE_MAX_MINORS, "gpiotach");
     if (result < 0) {
         printk(KERN_INFO MODULE_NAME ": Error registering chardev region %d\n", result);
@@ -286,6 +294,8 @@ static int __init gpiotach_init(void){
         // Check return value here
         cdev_add(&devs[i].cdev, MKDEV(Major, i), 1);
     }
+
+    timeBuffer.bufferSize = MODULE_MAX_EVENT_COUNTS;
 
     return result;
 }
