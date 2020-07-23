@@ -28,7 +28,8 @@ MODULE_VERSION("0.1");
 #define MODULE_NAME "GPIO_TACH"
 #define MODULE_MAX_MINORS 1
 
-#define MODULE_MAX_EVENT_COUNTS 200
+#define MODULE_SAMPLING_WINDOW_S 1
+#define MODULE_MAX_EVENT_COUNTS 200 * MODULE_SAMPLING_WINDOW_S
 
 static unsigned int gpioInput = 15;
 static unsigned int irqNumber;
@@ -109,34 +110,33 @@ static void clearTailBuffer(void *dev_id, ktime_t *pktime)
 }
 
 static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct pt_regs *regs){
-    ktime_t ktime;
+    ktime_t ktime, ktime_future;
     unsigned long head, tail, flags;
     ktime_t *item;
 
     numberPresses++;
     ktime = ktime_get();
+    ktime_future = ktime_add_us(ktime, MODULE_SAMPLING_WINDOW_S * USEC_PER_SEC);
 
-    printk(KERN_INFO MODULE_NAME ": Interrupt. Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
+    //printk(KERN_INFO MODULE_NAME ": Interrupt. Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
 
     spin_lock_irqsave(&cache_lock, flags); 
 
     clearTailBuffer(dev_id, &ktime);
-
-    ktime = ktime_add_us(ktime, 10 * USEC_PER_SEC);
 
     head = timeBuffer.head;
     tail = timeBuffer.tail;
 
     if (CIRC_SPACE(head, tail, timeBuffer.bufferSize) >= 1) {
         item = &timeBuffer.buffer[head];
-        *item = ktime;
+        *item = ktime_future;
         timeBuffer.head++;
         timeBuffer.head %= (timeBuffer.bufferSize - 1);
     }
 
     spin_unlock_irqrestore(&cache_lock, flags);
 
-    printk(KERN_INFO MODULE_NAME ": After, Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
+    //printk(KERN_INFO MODULE_NAME ": After, Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
 
     return (irq_handler_t) IRQ_HANDLED;
 }
