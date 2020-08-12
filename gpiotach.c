@@ -17,6 +17,7 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/semaphore.h>
+#include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
 
@@ -28,10 +29,19 @@ MODULE_VERSION("0.1");
 #define MODULE_NAME "GPIO_TACH"
 #define MODULE_MAX_MINORS 1
 
-#define MODULE_SAMPLING_WINDOW_S 1
-#define MODULE_MAX_EVENT_COUNTS 256
-
+/********* Module Parameters *********/
+// Input number
 static unsigned int gpioInput = 15;
+module_param(gpioInput, uint, 0664);
+
+// Number of seconds to sample
+static unsigned int sampleWindow = 3;
+module_param(sampleWindow, uint, 0664);
+
+// Maximum number of counts for the rolling buffer, rounded up to power of 2
+static unsigned int maxEvents = 256;
+module_param(maxEvents, uint, 0664);
+
 static unsigned int irqNumber;
 static unsigned int numberPresses = 0;
 static int Major;
@@ -49,7 +59,7 @@ struct tachometer_data devs[MODULE_MAX_MINORS];
 
 typedef struct
 {
-    ktime_t buffer[MODULE_MAX_EVENT_COUNTS];
+    ktime_t *pBuffer;
     unsigned long head;
     unsigned long tail;
     int bufferSize;
@@ -98,7 +108,7 @@ static void clearTailBuffer(void *dev_id, ktime_t *pktime)
     ktime_t *item;
 
     while (CIRC_CNT(timeBuffer.head, timeBuffer.tail, timeBuffer.bufferSize) >= 1) {
-        item = &(timeBuffer.buffer[timeBuffer.tail]);
+        item = &(timeBuffer.pBuffer[timeBuffer.tail]);
         if (ktime_compare(*pktime, *item) > 0) {
             //smp_store_release(timeBuffer.tail, (tail + 1) & (timeBuffer.bufferSize - 1));
             timeBuffer.tail ++;
@@ -116,7 +126,7 @@ static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct
 
     numberPresses++;
     ktime = ktime_get();
-    ktime_future = ktime_add_us(ktime, MODULE_SAMPLING_WINDOW_S * USEC_PER_SEC);
+    ktime_future = ktime_add_us(ktime, sampleWindow * USEC_PER_SEC);
 
     //printk(KERN_INFO MODULE_NAME ": Interrupt. Head:%lu Tail:%lu", timeBuffer.head, timeBuffer.tail);
 
@@ -128,7 +138,7 @@ static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct
     tail = timeBuffer.tail;
 
     if (CIRC_SPACE(head, tail, timeBuffer.bufferSize) >= 1) {
-        item = &timeBuffer.buffer[head];
+        item = &timeBuffer.pBuffer[head];
         *item = ktime_future;
         timeBuffer.head++;
         timeBuffer.head %= (timeBuffer.bufferSize);
@@ -163,6 +173,8 @@ static int gpiotach_release(struct inode *inode, struct file *file)
 {
     //struct tachometer_data *my_data;
     printk(KERN_INFO MODULE_NAME ": Inside close\n");
+
+    kfree(timeBuffer.pBuffer);
     //my_data = (struct tachometer_data *) file->private_data;
     //up(&my_data->sem);
     return 0;
@@ -230,6 +242,7 @@ static int __init gpiotach_init(void){
     int result = 0;
     int i;
     struct device *dev_ret;
+    uint roundedMaxEvents;
 
     printk(KERN_INFO MODULE_NAME ": Initializing the LKM\n");
 
@@ -295,7 +308,25 @@ static int __init gpiotach_init(void){
         cdev_add(&devs[i].cdev, MKDEV(Major, i), 1);
     }
 
-    timeBuffer.bufferSize = MODULE_MAX_EVENT_COUNTS;
+    // Determine the size for the time buffer
+    roundedMaxEvents = 1;
+    if (maxEvents > 65535) {
+        roundedMaxEvents = 65535;
+    } else {
+        while (roundedMaxEvents < maxEvents) {
+            roundedMaxEvents <<= 1;
+        }
+    }
+
+    printk(KERN_INFO MODULE_NAME ": Max events was %d Rounded to %d\n", maxEvents, roundedMaxEvents);
+
+    timeBuffer.pBuffer = kmalloc(roundedMaxEvents * sizeof(ktime_t), GFP_KERNEL);
+    if (!timeBuffer.pBuffer)
+    {
+        return PTR_ERR(timeBuffer.pBuffer);
+    }
+
+    timeBuffer.bufferSize = roundedMaxEvents;
 
     return result;
 }
