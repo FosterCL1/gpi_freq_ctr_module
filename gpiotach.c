@@ -174,7 +174,9 @@ static int gpiotach_release(struct inode *inode, struct file *file)
     //struct tachometer_data *my_data;
     printk(KERN_INFO MODULE_NAME ": Inside close\n");
 
-    kfree(timeBuffer.pBuffer);
+    if (timeBuffer.pBuffer != NULL) {
+        kfree(timeBuffer.pBuffer);
+    }
     //my_data = (struct tachometer_data *) file->private_data;
     //up(&my_data->sem);
     return 0;
