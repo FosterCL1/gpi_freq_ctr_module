@@ -154,7 +154,7 @@ static irq_handler_t gpiotach_irq_handler(unsigned int irq, void *dev_id, struct
 static int gpiotach_open(struct inode *inode, struct file *file)
 {
     struct tachometer_data *my_data;
-    printk(KERN_INFO MODULE_NAME ": Inside open\n");
+    //printk(KERN_INFO MODULE_NAME ": Inside open\n");
     //my_data = (struct tachometer_data *) file->private_data;
     my_data = container_of(inode->i_cdev, struct tachometer_data, cdev);
 
@@ -193,7 +193,7 @@ static int gpiotach_read(struct file *file, char __user *user_buffer, size_t siz
     my_data = (struct tachometer_data *) file->private_data;
 
     len = min(sizeof(numberPresses), size);
-    printk(KERN_INFO MODULE_NAME ": Inside read %d, %d\n", size, len);
+    //printk(KERN_INFO MODULE_NAME ": Inside read %d, %d\n", size, len);
 
     ktime = ktime_get();
 
@@ -204,7 +204,7 @@ static int gpiotach_read(struct file *file, char __user *user_buffer, size_t siz
     bufferCount = CIRC_CNT(head, tail, timeBuffer.bufferSize);
     spin_unlock_irqrestore(&cache_lock, flags);
 
-    printk(KERN_INFO MODULE_NAME ": Head:%d Tail:%d Cnt:%d\n", head, tail, bufferCount);
+    //printk(KERN_INFO MODULE_NAME ": Head:%d Tail:%d Cnt:%d\n", head, tail, bufferCount);
 
     if (copy_to_user(user_buffer, &bufferCount, len))
         return -EFAULT;
